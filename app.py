@@ -155,8 +155,8 @@ async def verify(_, cb):
     await cb.message.delete()
     await app.send_document(uid, file_id)
 
-# ---------------- TEXT HANDLER ----------------
-@app.on_message(filters.text & ~filters.command)
+# ---------------- TEXT HANDLER (FIXED LINE ONLY) ----------------
+@app.on_message(filters.text & ~filters.command())
 async def text_handler(_, msg):
     uid = msg.from_user.id
     if uid not in STATE:
@@ -310,5 +310,5 @@ async def list_channels(_, msg):
     txt = "\n".join(get_channels()) or "No channels"
     await msg.reply(f"📢 **Channels**:\n{txt}", disable_web_page_preview=True)
 
-print("🔥 BOT RUNNING – FINAL WITH STATS")
+print("🔥 BOT RUNNING – ERROR FIXED ONLY")
 app.run()
