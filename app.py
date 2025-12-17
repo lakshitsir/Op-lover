@@ -1,6 +1,6 @@
 # ======================================================
-# PREMIUM HARD-LOCK FILE BOT
-# PASSWORD + EXPIRY | RENDER + TERMUX
+# STABLE FILE LOCK BOT (FINAL)
+# Pyrogram v2 | Render + Termux
 # ======================================================
 
 import os, time, uuid, sqlite3, re
@@ -16,7 +16,7 @@ OWNER_ID = 5421311764
 
 # ---------------- APP ----------------
 app = Client(
-    "premium_lock_bot",
+    "stable_file_lock_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
@@ -34,14 +34,12 @@ CREATE TABLE IF NOT EXISTS files (
     token TEXT PRIMARY KEY,
     file_id TEXT,
     expiry INTEGER,
-    max_use INTEGER,
     used INTEGER DEFAULT 0,
     password TEXT
 )
 """)
 db.commit()
 
-# ---------------- TEMP STATE ----------------
 STATE = {}
 
 # ---------------- HELPERS ----------------
@@ -56,39 +54,40 @@ def get_channels():
     cur.execute("SELECT val FROM channels")
     return [x[0] for x in cur.fetchall()]
 
-def normalize_channel(val: str):
-    val = val.strip()
-    if val.startswith("@"):
-        return val
-    if val.startswith("https://t.me/") or val.startswith("http://t.me/"):
-        return val
+def normalize_channel(v):
+    v = v.strip()
+    if v.startswith("@"):
+        return v
+    if v.startswith("https://t.me/") or v.startswith("http://t.me/"):
+        return v
     return None
 
-def parse_expiry(text):
-    if text == "0":
+def parse_expiry(t):
+    if t == "0":
         return 0
     m = re.match(
-        r"(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hour|hours|d|day|days|y|year|years)",
-        text.lower()
+        r"(\d+)\s*(s|sec|m|min|h|hr|d|day|y|year)",
+        t.lower()
     )
     if not m:
         return None
-    num = int(m.group(1))
-    unit = m.group(2)
-    if unit.startswith("s"): return num
-    if unit.startswith("m"): return num * 60
-    if unit.startswith("h"): return num * 3600
-    if unit.startswith("d"): return num * 86400
-    if unit.startswith("y"): return num * 31536000
+    n = int(m.group(1))
+    u = m.group(2)
+    if u.startswith("s"): return n
+    if u.startswith("m"): return n * 60
+    if u.startswith("h"): return n * 3600
+    if u.startswith("d"): return n * 86400
+    if u.startswith("y"): return n * 31536000
 
 # ---------------- START ----------------
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     if len(msg.command) == 1:
         await msg.reply(
-            "✨ **𝙒𝙀𝙇𝘾𝙊𝙈𝙀** ✨\n\n"
-            "🔐 **𝙋𝙍𝙀𝙈𝙄𝙐𝙈 𝙎𝙀𝘾𝙐𝙍𝙀 𝙁𝙄𝙇𝙀 𝘽𝙊𝙏**\n\n"
-            "🔓 Open your special link to unlock file.",
+            "✨ **WELCOME** ✨\n\n"
+            "🔐 **SECURE FILE BOT**\n\n"
+            "File access requires channel join.\n"
+            "Open your special link to continue.",
             disable_web_page_preview=True
         )
         return
@@ -99,18 +98,18 @@ async def start(_, msg):
         await msg.reply("❌ Invalid / Expired Link")
         return
 
-    buttons = [[InlineKeyboardButton("📢 JOIN CHANNEL", url=ch)] for ch in get_channels()]
-    buttons.append([InlineKeyboardButton("✅ VERIFY ACCESS", callback_data=f"verify|{token}")])
+    buttons = [[InlineKeyboardButton("📢 JOIN CHANNEL", url=c)] for c in get_channels()]
+    buttons.append([InlineKeyboardButton("✅ VERIFY", callback_data=f"v|{token}")])
 
     await msg.reply(
-        "🔒 **ACCESS LOCKED**\n\nJoin all channels then verify 👇",
+        "🔒 **ACCESS LOCKED**\n\nJoin all channels then verify.",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 # ---------------- VERIFY ----------------
-@app.on_callback_query(filters.regex("^verify"))
+@app.on_callback_query(filters.regex("^v\\|"))
 async def verify(_, cb):
-    token = cb.data.split("|")[1]
+    token = cb.data.split("|", 1)[1]
     uid = cb.from_user.id
 
     for ch in get_channels():
@@ -133,7 +132,7 @@ async def verify(_, cb):
         return
 
     if password:
-        STATE[uid] = ("user_pass", token)
+        STATE[uid] = ("pass", token)
         await cb.message.edit("🔐 Enter Password")
         return
 
@@ -142,17 +141,17 @@ async def verify(_, cb):
     await cb.message.delete()
     await app.send_document(uid, file_id)
 
-# ---------------- TEXT HANDLER (FINAL FIX) ----------------
+# ---------------- TEXT (NON COMMAND) ----------------
 @app.on_message(filters.text & ~filters.regex(r"^/"))
 async def text_handler(_, msg):
     uid = msg.from_user.id
     if uid not in STATE:
         return
 
-    state = STATE[uid]
+    st = STATE[uid]
 
-    if state[0] == "user_pass":
-        token = state[1]
+    if st[0] == "pass":
+        token = st[1]
         cur.execute("SELECT file_id, password FROM files WHERE token=?", (token,))
         file_id, real = cur.fetchone()
         if msg.text != real:
@@ -163,22 +162,67 @@ async def text_handler(_, msg):
         del STATE[uid]
         await app.send_document(uid, file_id)
 
-    elif state[0] == "setpass":
+    elif st[0] == "setpass":
         pwd = None if msg.text == "0" else msg.text[:20]
-        STATE[uid] = ("setexp", state[1], state[2], pwd)
-        await msg.reply("⏳ Send expiry (12h / 1 day / 0)")
+        STATE[uid] = ("setexp", st[1], st[2], pwd)
+        await msg.reply("⏳ Send expiry (12h / 1d / 0)")
 
-    elif state[0] == "setexp":
+    elif st[0] == "setexp":
         sec = parse_expiry(msg.text)
         if sec is None:
-            await msg.reply("❌ Invalid expiry format")
+            await msg.reply("❌ Invalid expiry")
             return
         expiry = 0 if sec == 0 else int(time.time() + sec)
-        token, file_id, pwd = state[1], state[2], state[3]
-        cur.execute("INSERT INTO files VALUES (?,?,?,?,?,?)", (token, file_id, expiry, 0, 0, pwd))
+        token, file_id, pwd = st[1], st[2], st[3]
+        cur.execute(
+            "INSERT INTO files VALUES (?,?,?,?,?)",
+            (token, file_id, expiry, 0, pwd)
+        )
         db.commit()
         del STATE[uid]
-        await msg.reply(f"✅ Link Created\nhttps://t.me/{(await app.get_me()).username}?start={token}")
+        await msg.reply(
+            f"✅ Link Created:\nhttps://t.me/{(await app.get_me()).username}?start={token}"
+        )
 
-print("🔥 BOT RUNNING — FINAL FIX APPLIED")
+# ---------------- ADMIN ----------------
+@app.on_message(filters.command("upload") & filters.reply)
+async def upload(_, msg):
+    if not is_admin(msg.from_user.id):
+        return
+    token = uuid.uuid4().hex[:10]
+    file_id = msg.reply_to_message.document.file_id
+    STATE[msg.from_user.id] = ("setpass", token, file_id)
+    await msg.reply("🔐 Send password (0 = no password)")
+
+@app.on_message(filters.command("addchannel"))
+async def add_channel(_, msg):
+    if not is_admin(msg.from_user.id):
+        return
+    ch = normalize_channel(msg.command[1])
+    if not ch:
+        await msg.reply("❌ Use @username or t.me link")
+        return
+    cur.execute("INSERT INTO channels VALUES (?)", (ch,))
+    db.commit()
+    await msg.reply("✅ Channel Added")
+
+@app.on_message(filters.command("promote"))
+async def promote(_, msg):
+    if not is_owner(msg.from_user.id):
+        return
+    uid = int(msg.command[1])
+    cur.execute("INSERT OR IGNORE INTO admins VALUES (?)", (uid,))
+    db.commit()
+    await msg.reply(f"✅ Promoted {uid}")
+
+@app.on_message(filters.command("demote"))
+async def demote(_, msg):
+    if not is_owner(msg.from_user.id):
+        return
+    uid = int(msg.command[1])
+    cur.execute("DELETE FROM admins WHERE uid=?", (uid,))
+    db.commit()
+    await msg.reply(f"❌ Demoted {uid}")
+
+print("✅ BOT RUNNING (STABLE)")
 app.run()
