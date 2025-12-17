@@ -15,7 +15,12 @@ BOT_TOKEN = "8373581806:AAE46Kn4jgWh6l_R-tonKh4fA-TTvN_H71w"
 OWNER_ID = 5421311764
 
 # ---------------- APP ----------------
-app = Client("premium_lock_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "premium_lock_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
 # ---------------- DB ----------------
 os.makedirs("data", exist_ok=True)
@@ -24,34 +29,50 @@ cur = db.cursor()
 
 cur.execute("CREATE TABLE IF NOT EXISTS admins (uid INTEGER PRIMARY KEY)")
 cur.execute("CREATE TABLE IF NOT EXISTS channels (val TEXT)")
-cur.execute("""CREATE TABLE IF NOT EXISTS files (
-token TEXT PRIMARY KEY,
-file_id TEXT,
-expiry INTEGER,
-max_use INTEGER,
-used INTEGER DEFAULT 0,
-password TEXT
-)""")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS files (
+    token TEXT PRIMARY KEY,
+    file_id TEXT,
+    expiry INTEGER,
+    max_use INTEGER,
+    used INTEGER DEFAULT 0,
+    password TEXT
+)
+""")
 db.commit()
 
-# ---------------- TEMP STATES ----------------
-UPLOAD_STATE = {}
+# ---------------- TEMP STATE ----------------
+STATE = {}
 
 # ---------------- HELPERS ----------------
-def is_owner(uid): return uid == OWNER_ID
+def is_owner(uid):
+    return uid == OWNER_ID
 
 def is_admin(uid):
     cur.execute("SELECT 1 FROM admins WHERE uid=?", (uid,))
-    return cur.fetchone() or is_owner(uid)
+    return cur.fetchone() is not None or is_owner(uid)
 
 def get_channels():
     cur.execute("SELECT val FROM channels")
     return [x[0] for x in cur.fetchall()]
 
+def normalize_channel(val: str):
+    val = val.strip()
+    if val.startswith("@"):
+        return val
+    if val.startswith("https://t.me/") or val.startswith("http://t.me/"):
+        return val
+    return None
+
 def parse_expiry(text):
-    if text == "0": return 0
-    m = re.match(r"(\\d+)\\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hour|hours|d|day|days|y|year|years)", text.lower())
-    if not m: return None
+    if text == "0":
+        return 0
+    m = re.match(
+        r"(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hour|hours|d|day|days|y|year|years)",
+        text.lower()
+    )
+    if not m:
+        return None
     num = int(m.group(1))
     unit = m.group(2)
     if unit.startswith("s"): return num
@@ -64,24 +85,36 @@ def parse_expiry(text):
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     if len(msg.command) == 1:
-        await msg.reply("✨ **𝑾𝒆𝒍𝒄𝒐𝒎𝒆**\n🔐 Secure File Bot")
+        await msg.reply(
+            "✨ **𝙒𝙀𝙇𝘾𝙊𝙈𝙀** ✨\n\n"
+            "🔐 **𝙋𝙍𝙀𝙈𝙄𝙐𝙈 𝙎𝙀𝘾𝙐𝙍𝙀 𝙁𝙄𝙇𝙀 𝘽𝙊𝙏**\n\n"
+            "📥 File access is protected by:\n"
+            "• Mandatory Channel Join\n"
+            "• Password Protection\n"
+            "• Expiry Locked Links\n\n"
+            "🔓 Open your special link to continue.",
+            disable_web_page_preview=True
+        )
         return
 
     token = msg.command[1]
-    cur.execute("SELECT * FROM files WHERE token=?", (token,))
-    f = cur.fetchone()
-    if not f:
-        await msg.reply("❌ Invalid / Expired Link")
+    cur.execute("SELECT 1 FROM files WHERE token=?", (token,))
+    if not cur.fetchone():
+        await msg.reply("❌ **Invalid or Expired Link**")
         return
 
     buttons = []
     for ch in get_channels():
-        buttons.append([InlineKeyboardButton("📢 Join Channel", url=ch)])
-    buttons.append([InlineKeyboardButton("✅ VERIFY", callback_data=f"verify|{token}")])
+        buttons.append([InlineKeyboardButton("📢 JOIN CHANNEL", url=ch)])
+    buttons.append([InlineKeyboardButton("✅ VERIFY ACCESS", callback_data=f"verify|{token}")])
 
     await msg.reply(
-        "🔒 **ACCESS LOCKED**\n\nJoin all channels then verify 👇",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        "🔒 **ACCESS LOCKED**\n\n"
+        "📢 Join **ALL** required channels below 👇\n"
+        "⚠️ Even one missing = verification fail.\n\n"
+        "After joining, tap **VERIFY ACCESS** ✅",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True
     )
 
 # ---------------- VERIFY ----------------
@@ -96,21 +129,24 @@ async def verify(_, cb):
         except UserNotParticipant:
             await cb.answer("❌ Join ALL channels", show_alert=True)
             return
+        except Exception:
+            await cb.answer("❌ Verification Failed", show_alert=True)
+            return
 
-    cur.execute("SELECT * FROM files WHERE token=?", (token,))
-    f = cur.fetchone()
-    if not f:
+    cur.execute("SELECT file_id, expiry, used, password FROM files WHERE token=?", (token,))
+    row = cur.fetchone()
+    if not row:
         await cb.message.edit("❌ Invalid")
         return
 
-    _, file_id, expiry, max_use, used, password = f
+    file_id, expiry, used, password = row
 
     if expiry and time.time() > expiry:
         await cb.message.edit("⏳ Link Expired")
         return
 
     if password:
-        UPLOAD_STATE[uid] = ("pass", token)
+        STATE[uid] = ("user_pass", token)
         await cb.message.edit("🔐 **Enter Password**")
         return
 
@@ -119,57 +155,160 @@ async def verify(_, cb):
     await cb.message.delete()
     await app.send_document(uid, file_id)
 
-# ---------------- PASSWORD INPUT ----------------
-@app.on_message(filters.text)
+# ---------------- TEXT HANDLER ----------------
+@app.on_message(filters.text & ~filters.command)
 async def text_handler(_, msg):
     uid = msg.from_user.id
-    if uid not in UPLOAD_STATE: return
+    if uid not in STATE:
+        return
 
-    mode, token = UPLOAD_STATE[uid]
+    state = STATE[uid]
 
-    if mode == "pass":
-        cur.execute("SELECT password FROM files WHERE token=?", (token,))
-        real = cur.fetchone()[0]
+    if state[0] == "user_pass":
+        token = state[1]
+        cur.execute("SELECT file_id, password FROM files WHERE token=?", (token,))
+        file_id, real = cur.fetchone()
         if msg.text != real:
             await msg.reply("❌ Wrong Password")
             return
         cur.execute("UPDATE files SET used=used+1 WHERE token=?", (token,))
         db.commit()
-        del UPLOAD_STATE[uid]
-        await app.send_document(uid, cur.execute("SELECT file_id FROM files WHERE token=?", (token,)).fetchone()[0])
+        del STATE[uid]
+        await app.send_document(uid, file_id)
 
-# ---------------- ADMIN UPLOAD ----------------
-@app.on_message(filters.command("upload") & filters.reply)
-async def upload(_, msg):
-    if not is_admin(msg.from_user.id): return
-    token = uuid.uuid4().hex[:10]
-    file_id = msg.reply_to_message.document.file_id
-    UPLOAD_STATE[msg.from_user.id] = ("setpass", token, file_id)
-    await msg.reply("🔐 Send password (0 = no password)")
-
-@app.on_message(filters.text)
-async def admin_flow(_, msg):
-    uid = msg.from_user.id
-    if uid not in UPLOAD_STATE: return
-
-    state = UPLOAD_STATE[uid]
-
-    if state[0] == "setpass":
+    elif state[0] == "setpass":
         pwd = None if msg.text == "0" else msg.text[:20]
-        UPLOAD_STATE[uid] = ("setexp", state[1], state[2], pwd)
-        await msg.reply("⏳ Send expiry (e.g. 12h / 1 day / 0)")
+        STATE[uid] = ("setexp", state[1], state[2], pwd)
+        await msg.reply("⏳ Send expiry (12h / 1 day / 0)")
 
     elif state[0] == "setexp":
         sec = parse_expiry(msg.text)
         if sec is None:
-            await msg.reply("❌ Invalid format")
+            await msg.reply("❌ Invalid expiry format")
             return
         expiry = 0 if sec == 0 else int(time.time() + sec)
         token, file_id, pwd = state[1], state[2], state[3]
-        cur.execute("INSERT INTO files VALUES (?,?,?,?,?,?)", (token, file_id, expiry, 0, 0, pwd))
+        cur.execute(
+            "INSERT INTO files VALUES (?,?,?,?,?,?)",
+            (token, file_id, expiry, 0, 0, pwd)
+        )
         db.commit()
-        del UPLOAD_STATE[uid]
-        await msg.reply(f"✅ Link Created:\nhttps://t.me/{(await app.get_me()).username}?start={token}")
+        del STATE[uid]
+        await msg.reply(
+            f"✅ **Link Created**\n\n"
+            f"https://t.me/{(await app.get_me()).username}?start={token}",
+            disable_web_page_preview=True
+        )
 
-print("🔥 BOT RUNNING")
+# ---------------- ADMIN COMMANDS ----------------
+@app.on_message(filters.command("upload") & filters.reply)
+async def upload(_, msg):
+    if not is_admin(msg.from_user.id):
+        return
+    token = uuid.uuid4().hex[:10]
+    file_id = msg.reply_to_message.document.file_id
+    STATE[msg.from_user.id] = ("setpass", token, file_id)
+    await msg.reply("🔐 Send password (0 = no password)")
+
+@app.on_message(filters.command("promote"))
+async def promote(_, msg):
+    if not is_owner(msg.from_user.id):
+        return
+    uid = int(msg.command[1])
+    cur.execute("INSERT OR IGNORE INTO admins VALUES (?)", (uid,))
+    db.commit()
+    await msg.reply("✅ User Promoted")
+
+@app.on_message(filters.command("demote"))
+async def demote(_, msg):
+    if not is_owner(msg.from_user.id):
+        return
+    uid = int(msg.command[1])
+    cur.execute("DELETE FROM admins WHERE uid=?", (uid,))
+    db.commit()
+    await msg.reply("❌ User Demoted")
+
+@app.on_message(filters.command("help"))
+async def help_cmd(_, msg):
+    if not is_admin(msg.from_user.id):
+        return
+    await msg.reply(
+        "🛠 **ADMIN HELP**\n\n"
+        "/upload (reply file)\n"
+        "/addchannel @username OR t.me link\n"
+        "/removechannel value\n"
+        "/listchannels\n"
+        "/stats\n\n"
+        "/promote user_id (OWNER)\n"
+        "/demote user_id (OWNER)",
+        disable_web_page_preview=True
+    )
+
+# ---------------- STATS ----------------
+@app.on_message(filters.command("stats"))
+async def stats_cmd(_, msg):
+    if not is_admin(msg.from_user.id):
+        return
+
+    cur.execute("SELECT COUNT(*) FROM admins")
+    admins = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM channels")
+    channels = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM files")
+    files = cur.fetchone()[0]
+
+    cur.execute("SELECT SUM(used) FROM files")
+    used = cur.fetchone()[0] or 0
+
+    now = int(time.time())
+    cur.execute("SELECT COUNT(*) FROM files WHERE expiry = 0 OR expiry > ?", (now,))
+    active = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM files WHERE expiry != 0 AND expiry <= ?", (now,))
+    expired = cur.fetchone()[0]
+
+    await msg.reply(
+        "📊 **BOT STATISTICS**\n\n"
+        f"👑 Admins: `{admins}`\n"
+        f"📢 Channels: `{channels}`\n"
+        f"📦 Files Created: `{files}`\n"
+        f"🔓 Total Access: `{used}`\n"
+        f"⏳ Active Links: `{active}`\n"
+        f"❌ Expired Links: `{expired}`",
+        disable_web_page_preview=True
+    )
+
+# ---------------- CHANNEL MGMT ----------------
+@app.on_message(filters.command("addchannel"))
+async def add_channel(_, msg):
+    if not is_admin(msg.from_user.id):
+        return
+    raw = msg.command[1]
+    ch = normalize_channel(raw)
+    if not ch:
+        await msg.reply("❌ Invalid channel\nUse @username or t.me link")
+        return
+    cur.execute("INSERT INTO channels VALUES (?)", (ch,))
+    db.commit()
+    await msg.reply("✅ Channel Added")
+
+@app.on_message(filters.command("removechannel"))
+async def remove_channel(_, msg):
+    if not is_admin(msg.from_user.id):
+        return
+    ch = msg.command[1]
+    cur.execute("DELETE FROM channels WHERE val=?", (ch,))
+    db.commit()
+    await msg.reply("🗑 Channel Removed")
+
+@app.on_message(filters.command("listchannels"))
+async def list_channels(_, msg):
+    if not is_admin(msg.from_user.id):
+        return
+    txt = "\n".join(get_channels()) or "No channels"
+    await msg.reply(f"📢 **Channels**:\n{txt}", disable_web_page_preview=True)
+
+print("🔥 BOT RUNNING – FINAL WITH STATS")
 app.run()
